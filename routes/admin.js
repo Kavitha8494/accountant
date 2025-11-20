@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../config/db');
+const he = require('he');
 
 // Admin Login Page
 router.get('/login', (req, res) => {
@@ -367,6 +368,319 @@ router.delete('/news/:id', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error deleting news:', error);
         res.status(500).json({ success: false, message: 'Error deleting news' });
+    }
+});
+
+// Blog Management Page with Pagination, Search, and Date Filter
+router.get('/blog', requireAuth, async (req, res) => {
+    try {
+        const searchQuery = req.query.search || '';
+        const dateFrom = req.query.dateFrom || '';
+        const dateTo = req.query.dateTo || '';
+        const page = parseInt(req.query.page) || 1;
+        const limit = 5; // 5 items per page
+        const offset = (page - 1) * limit;
+        
+        let blogs, totalCount;
+        let whereConditions = [];
+        let queryParams = [];
+        
+        // Build WHERE clause
+        if (searchQuery) {
+            whereConditions.push('(CONTENT LIKE ? OR LINK_URL LIKE ?)');
+            queryParams.push(`%${searchQuery}%`, `%${searchQuery}%`);
+        }
+        
+        if (dateFrom) {
+            whereConditions.push('DATE >= ?');
+            queryParams.push(dateFrom);
+        }
+        
+        if (dateTo) {
+            whereConditions.push('DATE <= ?');
+            queryParams.push(dateTo);
+        }
+        
+        const whereClause = whereConditions.length > 0 
+            ? 'WHERE ' + whereConditions.join(' AND ')
+            : '';
+        
+        // Get total count for pagination
+        let countQuery = 'SELECT COUNT(*) as total FROM news_due_date_blog';
+        if (whereClause) {
+            countQuery += ' ' + whereClause;
+        }
+        
+        const [countResult] = await db.execute(countQuery, queryParams);
+        totalCount = countResult[0].total;
+        const totalPages = Math.ceil(totalCount / limit);
+        
+        // Get paginated blogs
+        let blogQuery = 'SELECT * FROM news_due_date_blog';
+        if (whereClause) {
+            blogQuery += ' ' + whereClause;
+        }
+        blogQuery += ' ORDER BY TIMESTAMP DESC LIMIT ? OFFSET ?';
+        
+        queryParams.push(limit, offset);
+        [blogs] = await db.execute(blogQuery, queryParams);
+
+        // Decode HTML entities in blog content
+        const decodedBlogs = (blogs || []).map(blog => ({
+            ...blog,
+            CONTENT: he.decode(blog.CONTENT || '')
+        }));
+
+        res.render('admin/blog', { 
+            blogs: decodedBlogs,
+            searchQuery: searchQuery,
+            dateFrom: dateFrom,
+            dateTo: dateTo,
+            adminUsername: req.session.adminUsername,
+            currentPage: page,
+            totalPages: totalPages,
+            totalCount: totalCount,
+            limit: limit
+        });
+    } catch (error) {
+        console.error('Error fetching blogs:', error);
+        res.render('admin/blog', { 
+            blogs: [],
+            searchQuery: '',
+            dateFrom: '',
+            dateTo: '',
+            adminUsername: req.session.adminUsername,
+            currentPage: 1,
+            totalPages: 0,
+            totalCount: 0,
+            limit: 5,
+            error: 'Error loading blog data'
+        });
+    }
+});
+
+// Add Blog Page
+router.get('/blog/add', requireAuth, (req, res) => {
+    res.render('admin/add-blog', {
+        adminUsername: req.session.adminUsername
+    });
+});
+
+// Add Blog API
+router.post('/blog/add', requireAuth, async (req, res) => {
+    try {
+        const { type, content, linkUrl, date } = req.body;
+
+        // Validation
+        if (!type || !content || !date) {
+            return res.render('admin/add-blog', {
+                adminUsername: req.session.adminUsername,
+                error: 'Type, Content, and Date are required',
+                formData: req.body
+            });
+        }
+
+        // Validate type
+        const validTypes = ['NEWS', 'DUE_DATE_REMAINDER', 'BLOGS'];
+        if (!validTypes.includes(type)) {
+            return res.render('admin/add-blog', {
+                adminUsername: req.session.adminUsername,
+                error: 'Invalid type selected',
+                formData: req.body
+            });
+        }
+
+        // Validate content (strip HTML tags for length check)
+        const contentText = content.replace(/<[^>]*>/g, '').trim();
+        if (contentText.length < 10) {
+            return res.render('admin/add-blog', {
+                adminUsername: req.session.adminUsername,
+                error: 'Content must be at least 10 characters',
+                formData: req.body
+            });
+        }
+
+        // Validate date format
+        if (!date || isNaN(new Date(date).getTime())) {
+            return res.render('admin/add-blog', {
+                adminUsername: req.session.adminUsername,
+                error: 'Please enter a valid date',
+                formData: req.body
+            });
+        }
+
+        // LINK_URL is optional, validate only if provided
+        let finalLinkUrl = '';
+        if (linkUrl && linkUrl.trim()) {
+            try {
+                new URL(linkUrl.trim());
+                finalLinkUrl = linkUrl.trim();
+            } catch (e) {
+                return res.render('admin/add-blog', {
+                    adminUsername: req.session.adminUsername,
+                    error: 'Please enter a valid URL or leave it empty',
+                    formData: req.body
+                });
+            }
+        }
+
+        // Insert blog into database
+        await db.execute(
+            'INSERT INTO news_due_date_blog (TYPE, CONTENT, LINK_URL, DATE) VALUES (?, ?, ?, ?)',
+            [type, content.trim(), finalLinkUrl, date]
+        );
+
+        // Redirect to blog page with success message
+        res.redirect('/admin/blog?success=Blog created successfully');
+    } catch (error) {
+        console.error('Error adding blog:', error);
+        res.render('admin/add-blog', {
+            adminUsername: req.session.adminUsername,
+            error: 'An error occurred while creating blog. Please try again.',
+            formData: req.body
+        });
+    }
+});
+
+// Edit Blog Page - Must be before /blog/:id route
+router.get('/blog/edit/:id', requireAuth, async (req, res) => {
+    try {
+        const blogId = req.params.id;
+        console.log('Edit blog route hit with ID:', blogId);
+
+        if (!blogId) {
+            return res.redirect('/admin/blog?error=Invalid blog ID');
+        }
+
+        // Get blog from database
+        const [blogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+
+        if (blogs.length === 0) {
+            return res.redirect('/admin/blog?error=Blog not found');
+        }
+
+        res.render('admin/edit-blog', {
+            adminUsername: req.session.adminUsername,
+            blog: blogs[0]
+        });
+    } catch (error) {
+        console.error('Error fetching blog for edit:', error);
+        res.redirect('/admin/blog?error=Error loading blog data');
+    }
+});
+
+// Update Blog API
+router.post('/blog/edit/:id', requireAuth, async (req, res) => {
+    try {
+        const blogId = req.params.id;
+        const { type, content, linkUrl, date } = req.body;
+
+        if (!blogId) {
+            return res.redirect('/admin/blog?error=Invalid blog ID');
+        }
+
+        // Validation
+        if (!type || !content || !date) {
+            // Get blog data to repopulate form
+            const [blogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+            return res.render('admin/edit-blog', {
+                adminUsername: req.session.adminUsername,
+                blog: blogs[0],
+                error: 'Type, Content, and Date are required'
+            });
+        }
+
+        // Validate type
+        const validTypes = ['NEWS', 'DUE_DATE_REMAINDER', 'BLOGS'];
+        if (!validTypes.includes(type)) {
+            const [blogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+            return res.render('admin/edit-blog', {
+                adminUsername: req.session.adminUsername,
+                blog: blogs[0],
+                error: 'Invalid type selected'
+            });
+        }
+
+        // Validate content (strip HTML tags for length check)
+        const contentText = content.replace(/<[^>]*>/g, '').trim();
+        if (contentText.length < 10) {
+            const [blogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+            return res.render('admin/edit-blog', {
+                adminUsername: req.session.adminUsername,
+                blog: blogs[0],
+                error: 'Content must be at least 10 characters'
+            });
+        }
+
+        // Validate date format
+        if (!date || isNaN(new Date(date).getTime())) {
+            const [blogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+            return res.render('admin/edit-blog', {
+                adminUsername: req.session.adminUsername,
+                blog: blogs[0],
+                error: 'Please enter a valid date'
+            });
+        }
+
+        // Check if blog exists
+        const [existingBlogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+        if (existingBlogs.length === 0) {
+            return res.redirect('/admin/blog?error=Blog not found');
+        }
+
+        // LINK_URL is optional, validate only if provided
+        let finalLinkUrl = '';
+        if (linkUrl && linkUrl.trim()) {
+            try {
+                new URL(linkUrl.trim());
+                finalLinkUrl = linkUrl.trim();
+            } catch (e) {
+                const [blogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+                return res.render('admin/edit-blog', {
+                    adminUsername: req.session.adminUsername,
+                    blog: blogs[0],
+                    error: 'Please enter a valid URL or leave it empty'
+                });
+            }
+        }
+
+        // Update blog in database
+        await db.execute(
+            'UPDATE news_due_date_blog SET TYPE = ?, CONTENT = ?, LINK_URL = ?, DATE = ? WHERE ID = ?',
+            [type, content.trim(), finalLinkUrl, date, blogId]
+        );
+
+        // Redirect to blog page with success message
+        res.redirect('/admin/blog?success=Blog updated successfully');
+    } catch (error) {
+        console.error('Error updating blog:', error);
+        res.redirect('/admin/blog?error=An error occurred while updating blog');
+    }
+});
+
+// Delete Blog API
+router.delete('/blog/:id', requireAuth, async (req, res) => {
+    try {
+        const blogId = req.params.id;
+        
+        if (!blogId) {
+            return res.status(400).json({ success: false, message: 'Blog ID is required' });
+        }
+        
+        // Check if blog exists
+        const [blogs] = await db.execute('SELECT * FROM news_due_date_blog WHERE ID = ?', [blogId]);
+        
+        if (blogs.length === 0) {
+            return res.status(404).json({ success: false, message: 'Blog not found' });
+        }
+        
+        // Delete blog
+        await db.execute('DELETE FROM news_due_date_blog WHERE ID = ?', [blogId]);
+        
+        res.json({ success: true, message: 'Blog deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting blog:', error);
+        res.status(500).json({ success: false, message: 'Error deleting blog' });
     }
 });
 
