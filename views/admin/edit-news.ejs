@@ -226,26 +226,7 @@
 <body>
     <div class="admin-container">
         <!-- Sidebar -->
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <h3>Admin Panel</h3>
-                <p><%= adminUsername %></p>
-            </div>
-            <ul class="sidebar-menu">
-                <li>
-                    <a href="/admin/news">
-                        <i class="bi bi-newspaper"></i>
-                        News Management
-                    </a>
-                </li>
-            </ul>
-            <div class="sidebar-footer">
-                <a href="/admin/logout">
-                    <i class="bi bi-box-arrow-right"></i>
-                    <span style="margin-left: 0.5rem;">Logout</span>
-                </a>
-            </div>
-        </aside>
+        <%- include('./components/sidebar', { adminUsername, activePage: 'news' }) %>
 
         <!-- Main Content -->
         <main class="main-content">
