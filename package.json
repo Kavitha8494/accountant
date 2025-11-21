@@ -49,7 +49,8 @@
     "websocket": "^1.0.34",
     "winston": "^3.17.0",
     "ws": "^8.8.1",
-   "bootstrap": "^5.2.3"
+    "@fortawesome/fontawesome-free": "^7.1.0",
+    "bootstrap": "^5.2.3"
   },
  
   "devDependencies": {

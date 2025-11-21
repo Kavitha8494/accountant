@@ -56,6 +56,7 @@ app.use(session({
 //setting all files view as .ejs
 app.set("view engine", "ejs");
 app.use(express.static("public"));
+app.use('/fa', express.static(__dirname + '/node_modules/@fortawesome/fontawesome-free'));
 
 
 const nDate = new Date().toLocaleString('en-US', {
